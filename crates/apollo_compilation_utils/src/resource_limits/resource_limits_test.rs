@@ -23,6 +23,7 @@ fn test_cpu_time_limit() {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "macos", ignore = "macOS rejects RLIMIT_AS / virtual-memory limits")]
 fn test_memory_size_limit() {
     let memory_limit = 9 * 512 * 1024; // 4.5 MB
     let memory_size_rlimit = ResourceLimits::new(None, None, Some(memory_limit));
@@ -51,6 +52,23 @@ fn test_memory_size_limit() {
     }
 
     panic!("Child process did not exit with a memory allocation error.");
+}
+
+#[rstest]
+#[cfg(target_os = "macos")]
+fn test_memory_size_limit_is_ignored_on_macos() {
+    let memory_limit = 9 * 512 * 1024; // 4.5 MB
+    let memory_size_rlimit = ResourceLimits::new(None, None, Some(memory_limit));
+
+    let mut command = Command::new("bash");
+    command.args(["-c", "exit 0"]);
+    memory_size_rlimit.apply(&mut command);
+    let output = command.output().expect("Failed to start process with skipped memory limit");
+
+    assert!(
+        output.status.success(),
+        "Process should still run successfully when macOS rejects RLIMIT_AS"
+    );
 }
 
 #[rstest]

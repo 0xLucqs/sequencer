@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use blockifier::context::BlockContext;
+use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use blockifier::state::cached_state::StateMaps;
 use rstest::rstest;
 use starknet_api::block::{BlockHash, BlockNumber};
@@ -78,7 +79,9 @@ fn test_get_storage_proofs_from_rpc(
 
     let config = StorageProofConfig::default();
     let result = runtime.block_on(async {
-        rpc_provider.get_storage_proofs(BlockNumber(block_number), &execution_data, &config).await
+        rpc_provider
+            .get_storage_proofs(BlockId::Number(BlockNumber(block_number)), &execution_data, &config)
+            .await
     });
     assert!(result.is_ok(), "Failed to get storage proofs: {:?}", result.err());
 

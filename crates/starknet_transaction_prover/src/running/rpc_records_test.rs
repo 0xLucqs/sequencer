@@ -78,6 +78,114 @@ async fn test_mock_server_matches_rpc_request() {
     assert_eq!(body["result"], 42);
 }
 
+#[tokio::test]
+async fn test_mock_server_replays_duplicate_requests_in_recorded_order() {
+    let records = RpcRecords {
+        interactions: vec![
+            RpcInteraction {
+                method: "starknet_blockHashAndNumber".to_string(),
+                sorted_params: serde_json::json!([]),
+                response: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": { "block_hash": "0x1", "block_number": 1 }
+                }),
+            },
+            RpcInteraction {
+                method: "starknet_blockHashAndNumber".to_string(),
+                sorted_params: serde_json::json!([]),
+                response: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": { "block_hash": "0x2", "block_number": 2 }
+                }),
+            },
+        ],
+    };
+
+    let server = MockRpcServer::new(&records).await;
+    let client = reqwest::Client::new();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "starknet_blockHashAndNumber",
+        "params": []
+    });
+
+    let first = client.post(server.url()).json(&request).send().await.unwrap();
+    let second = client.post(server.url()).json(&request).send().await.unwrap();
+
+    assert_eq!(first.status(), 200);
+    assert_eq!(second.status(), 200);
+
+    let first_body: serde_json::Value = first.json().await.unwrap();
+    let second_body: serde_json::Value = second.json().await.unwrap();
+
+    assert_eq!(first_body["result"]["block_hash"], "0x1");
+    assert_eq!(second_body["result"]["block_hash"], "0x2");
+}
+
+#[tokio::test]
+async fn test_mock_server_replays_matching_request_out_of_order() {
+    let records = RpcRecords {
+        interactions: vec![
+            RpcInteraction {
+                method: "starknet_getNonce".to_string(),
+                sorted_params: serde_json::json!({"block_id": "latest", "contract_address": "0x1"}),
+                response: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": "0x0"
+                }),
+            },
+            RpcInteraction {
+                method: "starknet_getClassHashAt".to_string(),
+                sorted_params: serde_json::json!({"block_id": "latest", "contract_address": "0x1"}),
+                response: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": "0x123"
+                }),
+            },
+        ],
+    };
+
+    let server = MockRpcServer::new(&records).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(server.url())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "starknet_getClassHashAt",
+            "params": {"block_id": "latest", "contract_address": "0x1"}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["result"], "0x123");
+
+    let next_response = client
+        .post(server.url())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "starknet_getNonce",
+            "params": {"block_id": "latest", "contract_address": "0x1"}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(next_response.status(), 200);
+    let next_body: serde_json::Value = next_response.json().await.unwrap();
+    assert_eq!(next_body["result"], "0x0");
+}
+
 /// End-to-end test: record interactions through proxy, save to file, load, and replay.
 #[tokio::test]
 async fn test_record_save_load_replay_round_trip() {

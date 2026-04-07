@@ -14,7 +14,7 @@
 //!
 //! - **Live mode** (default): Tests use a real RPC node directly (existing behavior).
 
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -118,16 +118,12 @@ impl MockRpcServer {
 
     /// Creates a mock RPC server that replays pre-recorded interactions.
     ///
-    /// Matches requests by `method` + normalized `params` (arrays sorted).
+    /// Matches requests by `method` + normalized `params` (arrays sorted) and consumes the first
+    /// remaining matching interaction. This preserves duplicate responses for the same request
+    /// while tolerating benign reordering caused by nondeterministic iteration in the prover.
     pub(crate) async fn new(records: &RpcRecords) -> MockRpcServer {
-        let mut lookup: HashMap<String, Value> = HashMap::new();
-        for interaction in &records.interactions {
-            let key = make_lookup_key(&interaction.method, &interaction.sorted_params);
-            lookup.insert(key, interaction.response.clone());
-        }
-
-        // Every request will be handled by the mock_rpc_handler with the lookup map.
-        let state = Arc::new(lookup);
+        // Every request will be handled by the mock_rpc_handler with the recorded transcript.
+        let state = Arc::new(Mutex::new(VecDeque::from(records.interactions.clone())));
         let app = Router::new().route("/", post(MockRpcServer::handler)).with_state(state);
 
         let listener = TcpListener::bind(SERVER_BIND_ADDRESS).await.unwrap();
@@ -151,9 +147,9 @@ impl MockRpcServer {
         MockRpcServer { url: format!("http://{addr}"), _server_shutdown: shutdown_tx }
     }
 
-    /// Handles a JSON-RPC request by looking up the response in the lookup map.
+    /// Handles a JSON-RPC request by replaying the first remaining matching interaction.
     async fn handler(
-        State(lookup): State<Arc<HashMap<String, Value>>>,
+        State(interactions): State<Arc<Mutex<VecDeque<RpcInteraction>>>>,
         body: Bytes,
     ) -> impl IntoResponse {
         let request: Value =
@@ -162,10 +158,33 @@ impl MockRpcServer {
         let params = request.get("params").cloned().unwrap_or(Value::Null);
         let key = make_lookup_key(method, &params);
 
-        match lookup.get(&key) {
-            Some(response) => axum::Json(response.clone()).into_response(),
+        let matched_interaction = {
+            let mut interactions = interactions.lock().unwrap();
+            interactions
+                .iter()
+                .position(|interaction| {
+                    make_lookup_key(&interaction.method, &interaction.sorted_params) == key
+                })
+                .map(|index| {
+                    let interaction = interactions
+                        .remove(index)
+                        .expect("matching interaction position should be removable");
+                    (interaction, index)
+                })
+        };
+
+        match matched_interaction {
+            Some((interaction, matched_index)) => {
+                if matched_index > 0 {
+                    eprintln!(
+                        "Mock RPC server: replayed {key} from {matched_index} step(s) later in \
+                         the recorded transcript."
+                    );
+                }
+                axum::Json(interaction.response).into_response()
+            }
             None => {
-                eprintln!("Mock RPC server: no match for {key}");
+                eprintln!("Mock RPC server: no remaining interaction for {key}");
                 (StatusCode::NOT_FOUND, "No matching recorded interaction").into_response()
             }
         }
@@ -196,6 +215,7 @@ pub fn records_exist(test_name: &str) -> bool {
 // ================================================================================================
 
 /// Shared state for the recording proxy server.
+#[cfg(test)]
 pub(crate) struct RecordingProxyState {
     /// URL of the real RPC node to forward requests to.
     pub(crate) target_url: String,
@@ -210,6 +230,7 @@ pub(crate) struct RecordingProxyState {
 /// The proxy forwards all POST requests to the real RPC node while recording
 /// each request/response pair. When dropped or explicitly collected, the recorded
 /// interactions can be saved to a file.
+#[cfg(test)]
 pub struct RecordingProxy {
     /// The local URL of the proxy (e.g., `http://127.0.0.1:PORT`).
     pub(crate) url: String,
@@ -219,6 +240,7 @@ pub struct RecordingProxy {
     pub(crate) _server_shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
+#[cfg(test)]
 impl RecordingProxy {
     /// Starts a recording proxy that forwards requests to `target_url`.
     ///

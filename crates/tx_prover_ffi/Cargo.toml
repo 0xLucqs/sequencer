@@ -1,0 +1,11 @@
+[package]
+name = "tx_prover_ffi"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "tx_prover_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+starknet_transaction_prover = { path = "../starknet_transaction_prover", features = ["ffi"] }

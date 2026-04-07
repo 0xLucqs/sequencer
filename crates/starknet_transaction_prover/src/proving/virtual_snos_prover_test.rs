@@ -28,21 +28,78 @@
 //! cargo test -p starknet_transaction_prover virtual_snos_prover_test -- --ignored
 //! ```
 
+use std::env;
+use std::fs;
+
+use apollo_infra_utils::path::resolve_project_relative_path;
 use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use blockifier_test_utils::calldata::create_calldata;
 use rstest::rstest;
-use starknet_api::core::ContractAddress;
+use serde::Deserialize;
+use starknet_api::block::BlockNumber;
+use starknet_api::core::{ChainId, ContractAddress};
 use starknet_api::{contract_address, felt};
 use starknet_proof_verifier::verify_proof;
+use starknet_types_core::felt::Felt;
 
 use crate::proving::virtual_snos_prover::VirtualSnosProver;
 use crate::test_utils::{
+    DUMMY_ACCOUNT_ADDRESS,
+    STRK_TOKEN_ADDRESS_SEPOLIA,
     build_client_side_rpc_invoke,
     resolve_test_mode,
     runner_factory,
-    DUMMY_ACCOUNT_ADDRESS,
-    STRK_TOKEN_ADDRESS_SEPOLIA,
+    runner_factory_with_chain_id,
 };
+
+const DEFAULT_PRIVACY_DEMO_REQUEST_FILE: &str = "privacy_demo_prove_transaction_request.json";
+
+#[derive(Deserialize)]
+struct ProveTransactionRequest {
+    params: ProveTransactionParams,
+}
+
+#[derive(Deserialize)]
+struct ProveTransactionParams {
+    block_id: BlockId,
+    transaction: starknet_api::rpc_transaction::RpcTransaction,
+}
+
+fn resolve_resource_path(file_name: &str) -> std::path::PathBuf {
+    let relative_path: std::path::PathBuf =
+        ["crates", "starknet_transaction_prover", "resources", file_name].iter().collect();
+    resolve_project_relative_path(&relative_path.to_string_lossy())
+        .unwrap_or_else(|_| panic!("Failed to resolve path for {file_name}"))
+}
+
+fn load_privacy_demo_request() -> ProveTransactionParams {
+    let request_path = env::var("PRIVACY_DEMO_REQUEST_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| resolve_resource_path(DEFAULT_PRIVACY_DEMO_REQUEST_FILE));
+    let request_json =
+        fs::read_to_string(&request_path).unwrap_or_else(|_| panic!("Failed to read {request_path:?}"));
+    serde_json::from_str::<ProveTransactionRequest>(&request_json)
+        .unwrap_or_else(|_| panic!("Failed to parse privacy demo request from {request_path:?}"))
+        .params
+}
+
+fn resolve_privacy_demo_block_id(request_block_id: BlockId) -> BlockId {
+    match env::var("PRIVACY_DEMO_BLOCK_ID").as_deref() {
+        Ok("request") => request_block_id,
+        Ok("latest") | Err(_) => BlockId::Latest,
+        Ok(value) => match value.parse::<u64>() {
+            Ok(block_number) => BlockId::Number(BlockNumber(block_number)),
+            Err(_) => BlockId::Hash(starknet_api::block::BlockHash(
+                Felt::from_hex(value).unwrap_or_else(|_| {
+                    panic!(
+                        "PRIVACY_DEMO_BLOCK_ID must be 'latest', 'request', a decimal block \
+                         number, or a 0x-prefixed block hash"
+                    )
+                }),
+            )),
+        },
+    }
+}
 
 /// Integration test for the full prover pipeline with a `balanceOf` transaction.
 /// Runs on a Sepolia environment; in live/recording mode requires a Sepolia RPC node via
@@ -74,6 +131,42 @@ async fn test_prove_balance_of_transaction() {
     let output = result.expect("prove_transaction should succeed");
 
     // Verify the proof against the proof facts.
+    let proof_facts = output.proof_facts.clone();
+    let proof = output.proof.clone();
+    tokio::task::spawn_blocking(move || verify_proof(proof_facts, proof))
+        .await
+        .expect("proof verification task panicked")
+        .expect("proof verification should succeed");
+}
+
+/// Integration test for the full prover pipeline with a captured privacy demo payload.
+///
+/// Default behavior is to use `latest` for the proving block so the test can be recorded once on
+/// a non-archival node and replayed offline from `resources/rpc_records`.
+/// The fixture is captured from Integration Sepolia and carries that chain ID by default.
+///
+/// Overrides:
+/// - `PRIVACY_DEMO_REQUEST_FILE=/abs/path/request.json` to use a fresh browser-captured request.
+/// - `PRIVACY_DEMO_BLOCK_ID=request` to use the block id embedded in that request.
+/// - `PRIVACY_DEMO_BLOCK_ID=latest` or a decimal block number or `0x...` hash to force a block.
+/// - `DUMP_STORAGE_PROOF_PAYLOAD=1` to print the exact `starknet_getStorageProof` payload(s).
+#[rstest]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "record once against a live RPC, then replay offline via resources/rpc_records"]
+async fn test_prove_privacy_demo_transaction() {
+    let test_mode = resolve_test_mode("test_prove_privacy_demo_transaction").await;
+    let request = load_privacy_demo_request();
+    let block_id = resolve_privacy_demo_block_id(request.block_id);
+
+    let factory = runner_factory_with_chain_id(&test_mode.rpc_url(), ChainId::IntegrationSepolia);
+    let prover = VirtualSnosProver::from_runner(factory);
+
+    let result = prover.prove_transaction(block_id, request.transaction).await;
+
+    test_mode.finalize();
+
+    let output = result.expect("prove_transaction should succeed");
+
     let proof_facts = output.proof_facts.clone();
     let proof = output.proof.clone();
     tokio::task::spawn_blocking(move || verify_proof(proof_facts, proof))

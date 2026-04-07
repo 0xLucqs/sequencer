@@ -15,7 +15,7 @@ pub mod virtual_block_executor;
 
 #[cfg(test)]
 mod classes_provider_test;
-#[cfg(test)]
+#[cfg(any(test, feature = "ffi"))]
 pub mod rpc_records;
 #[cfg(test)]
 mod rpc_records_test;

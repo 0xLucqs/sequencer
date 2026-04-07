@@ -178,6 +178,7 @@ where
     /// Takes execution data from a previous virtual block execution.
     pub(crate) async fn create_virtual_os_hints(
         execution_data: VirtualBlockExecutionData,
+        storage_proof_block_id: BlockId,
         classes_provider: &C,
         storage_proofs_provider: &S,
         storage_proof_config: &StorageProofConfig,
@@ -190,14 +191,11 @@ where
             strk_fee_token_address: chain_info.fee_token_addresses.strk_fee_token_address,
         };
 
-        // Extract block number from base block info for storage proofs.
-        let block_number = execution_data.base_block_info.block_context.block_info().block_number;
-
         // Fetch classes and storage proofs in parallel.
         let (classes, storage_proofs) = tokio::join!(
             classes_provider.get_classes(&execution_data.executed_class_hashes),
             storage_proofs_provider.get_storage_proofs(
-                block_number,
+                storage_proof_block_id,
                 &execution_data,
                 storage_proof_config
             )
@@ -308,6 +306,7 @@ where
         // Create OS hints from execution data.
         let os_hints = Self::create_virtual_os_hints(
             execution_data,
+            block_id,
             &classes_provider,
             &storage_proofs_provider,
             &config.storage_proof_config,

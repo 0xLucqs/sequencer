@@ -24,3 +24,6 @@ pub mod server;
 
 #[cfg(test)]
 mod test_utils;
+
+#[cfg(feature = "ffi")]
+pub mod ffi;

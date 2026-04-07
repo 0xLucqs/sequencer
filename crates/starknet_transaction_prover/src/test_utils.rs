@@ -109,6 +109,11 @@ pub fn rpc_provider() -> RpcStorageProofsProvider {
 /// - Execute the committer to compute new state roots.
 /// - Generate commitment infos with actual root changes.
 pub(crate) fn runner_factory(rpc_url: &str) -> RpcRunnerFactory {
+    runner_factory_with_chain_id(rpc_url, get_chain_id())
+}
+
+/// Creates an [`RpcRunnerFactory`] pointed at the given RPC URL and chain ID.
+pub(crate) fn runner_factory_with_chain_id(rpc_url: &str, chain_id: ChainId) -> RpcRunnerFactory {
     let rpc_url = Url::parse(rpc_url).expect("Invalid RPC URL");
     let contract_class_manager = ContractClassManager::start(ContractClassManagerConfig::default());
 
@@ -122,7 +127,7 @@ pub(crate) fn runner_factory(rpc_url: &str) -> RpcRunnerFactory {
         },
     };
 
-    let chain_info = get_chain_info(&get_chain_id(), get_strk_fee_token_override());
+    let chain_info = get_chain_info(&chain_id, get_strk_fee_token_override());
     RpcRunnerFactory::new(rpc_url, chain_info, contract_class_manager, runner_config)
 }
 

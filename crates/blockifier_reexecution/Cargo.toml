@@ -9,8 +9,11 @@ description = "Tool for re-executing historical Starknet blocks to verify transa
 [features]
 blockifier_regression_https_testing = []
 cairo_native = ["blockifier/cairo_native"]
+# In-process Sierra-to-CASM compilation (no subprocess). Required for iOS/mobile.
+inline_sierra_compile = ["dep:cairo-lang-starknet-classes", "dep:apollo_compilation_utils"]
 
 [dependencies]
+apollo_compilation_utils = { workspace = true, optional = true }
 apollo_compile_to_casm.workspace = true
 apollo_compile_to_casm_types.workspace = true
 apollo_config.workspace = true
@@ -27,6 +30,7 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 retry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+cairo-lang-starknet-classes = { workspace = true, optional = true }
 starknet-core.workspace = true
 starknet-types-core.workspace = true
 starknet_api.workspace = true
@@ -37,7 +41,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 validator.workspace = true
 
 [dev-dependencies]
-cairo-lang-starknet-classes.workspace = true
+cairo-lang-starknet-classes = { workspace = true }
 mockito.workspace = true
 rstest.workspace = true
 starknet_api = { workspace = true, features = ["testing"] }

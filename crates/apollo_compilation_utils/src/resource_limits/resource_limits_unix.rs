@@ -2,7 +2,7 @@ use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use rlimit::{setrlimit, Resource};
+use rlimit::{Resource, setrlimit};
 
 #[cfg(test)]
 #[path = "resource_limits_test.rs"]
@@ -31,7 +31,20 @@ impl RLimit {
             "Setting {:?} limits: {} {} soft limit; {} {} hard limit.",
             self.resource, self.soft_limit, self.units, self.hard_limit, self.units
         );
-        setrlimit(self.resource, self.soft_limit, self.hard_limit)
+        match setrlimit(self.resource, self.soft_limit, self.hard_limit) {
+            #[cfg(target_os = "macos")]
+            Err(err)
+                if self.resource == Resource::AS && err.kind() == io::ErrorKind::InvalidInput =>
+            {
+                eprintln!(
+                    "Skipping {:?} limit on macOS: this platform rejects the address-space \
+                     resource limit.",
+                    self.resource
+                );
+                Ok(())
+            }
+            result => result,
+        }
     }
 }
 

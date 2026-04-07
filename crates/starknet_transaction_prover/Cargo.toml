@@ -11,6 +11,8 @@ cairo_native = ["blockifier/cairo_native"]
 # Enables in-memory stwo proving.  Requires a nightly Rust toolchain because the
 # stwo prover crate uses unstable features (array_chunks, portable_simd, …).
 stwo_proving = ["dep:privacy-prove"]
+# FFI entry point for iOS/mobile builds. Implies stwo_proving.
+ffi = ["stwo_proving", "dep:axum", "blockifier_reexecution/inline_sierra_compile"]
 
 [dependencies]
 anyhow.workspace = true
@@ -23,6 +25,7 @@ cairo-lang-utils.workspace = true
 cairo-vm.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
+axum = { workspace = true, optional = true }
 http.workspace = true
 indexmap.workspace = true
 jsonrpsee = { workspace = true, features = ["macros", "server"] }

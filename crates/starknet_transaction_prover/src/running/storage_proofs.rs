@@ -1,10 +1,11 @@
+use std::env;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
 use blockifier::state::cached_state::StateMaps;
+use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use starknet_api::block::BlockNumber;
 use starknet_api::core::{ClassHash, ContractAddress, Nonce};
 use starknet_api::hash::{HashOutput, StateRoots};
 use starknet_os::commitment_infos::{CommitmentInfo, StateCommitmentInfos};
@@ -183,7 +184,7 @@ impl Default for StorageProofConfig {
 pub(crate) trait StorageProofProvider {
     async fn get_storage_proofs(
         &self,
-        block_number: BlockNumber,
+        block_id: BlockId,
         execution_data: &VirtualBlockExecutionData,
         config: &StorageProofConfig,
     ) -> Result<StorageProofs, ProofProviderError>;
@@ -267,32 +268,60 @@ impl RpcStorageProofsProvider {
     /// `to_storage_proofs` to detect any violations of this assumption.
     pub(crate) async fn fetch_proofs(
         &self,
-        block_number: BlockNumber,
+        block_id: BlockId,
         query: &RpcStorageProofsQuery,
     ) -> Result<RpcStorageProof, ProofProviderError> {
         if count_total_keys(query) <= MAX_KEYS_PER_REQUEST {
-            return self.fetch_single_proof(block_number, query).await;
+            return self.fetch_single_proof(block_id, query).await;
         }
 
         let chunks = split_query(query, MAX_KEYS_PER_REQUEST);
         // TODO(Aviv): Consider fetching chunks in parallel with try_join_all.
         let mut proofs = Vec::with_capacity(chunks.len());
         for chunk in &chunks {
-            proofs.push(self.fetch_single_proof(block_number, chunk).await?);
+            proofs.push(self.fetch_single_proof(block_id, chunk).await?);
         }
 
         Ok(merge_storage_proofs(proofs, &chunks, query))
     }
 
+    fn to_confirmed_block_id(block_id: BlockId) -> Result<ConfirmedBlockId, ProofProviderError> {
+        match block_id {
+            BlockId::Latest => Ok(ConfirmedBlockId::Latest),
+            BlockId::Hash(block_hash) => Ok(ConfirmedBlockId::Hash(block_hash.0)),
+            BlockId::Number(block_number) => Ok(ConfirmedBlockId::Number(block_number.0)),
+            BlockId::Pending => Err(ProofProviderError::InvalidProofResponse(
+                "Pending blocks are not supported for storage proofs".to_string(),
+            )),
+        }
+    }
+
     /// Sends a single `get_storage_proof` RPC call (no chunking).
     async fn fetch_single_proof(
         &self,
-        block_number: BlockNumber,
+        block_id: BlockId,
         query: &RpcStorageProofsQuery,
     ) -> Result<RpcStorageProof, ProofProviderError> {
-        let block_id = ConfirmedBlockId::Number(block_number.0);
+        let block_id = Self::to_confirmed_block_id(block_id)?;
         let contract_addresses: Vec<Felt> =
             query.contract_addresses.iter().map(|a| *a.0.key()).collect();
+
+        if env::var("DUMP_STORAGE_PROOF_PAYLOAD").is_ok() {
+            eprintln!(
+                "starknet_getStorageProof payload: {}",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "starknet_getStorageProof",
+                    "params": [
+                        block_id,
+                        query.class_hashes,
+                        contract_addresses,
+                        query.contract_storage_keys,
+                    ],
+                })
+            );
+        }
 
         let storage_proof = self
             .0
@@ -496,13 +525,13 @@ impl RpcStorageProofsProvider {
 impl StorageProofProvider for RpcStorageProofsProvider {
     async fn get_storage_proofs(
         &self,
-        block_number: BlockNumber,
+        block_id: BlockId,
         execution_data: &VirtualBlockExecutionData,
         config: &StorageProofConfig,
     ) -> Result<StorageProofs, ProofProviderError> {
         let query = Self::prepare_query(execution_data);
 
-        let rpc_proof = self.fetch_proofs(block_number, &query).await?;
+        let rpc_proof = self.fetch_proofs(block_id, &query).await?;
 
         // Validate that contract_leaves_data matches contract_addresses length.
         let leaves_len = rpc_proof.contracts_proof.contract_leaves_data.len();

@@ -4,9 +4,12 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read};
+#[cfg(not(feature = "inline_sierra_compile"))]
 use std::sync::LazyLock;
 
+#[cfg(not(feature = "inline_sierra_compile"))]
 use apollo_compile_to_casm::{create_sierra_compiler, SierraCompiler};
+#[cfg(not(feature = "inline_sierra_compile"))]
 use apollo_compile_to_casm_types::RawClass;
 use apollo_sierra_compilation_config::config::{
     SierraCompilationConfig,
@@ -30,6 +33,7 @@ use starknet_core::types::{
     LegacyEntryPointsByType,
 };
 
+#[cfg(not(feature = "inline_sierra_compile"))]
 static SIERRA_COMPILER: LazyLock<SierraCompiler> = LazyLock::new(|| {
     create_sierra_compiler(SierraCompilationConfig {
         max_bytecode_size: 10 * DEFAULT_MAX_BYTECODE_SIZE,
@@ -77,7 +81,8 @@ pub fn decode_reader(bytes: Vec<u8>) -> io::Result<String> {
 }
 
 /// Compile a SierraContractClass to a versioned ContractClass V1 (casm) using
-/// apollo_compile_to_casm.
+/// apollo_compile_to_casm (subprocess-based).
+#[cfg(not(feature = "inline_sierra_compile"))]
 pub fn sierra_to_versioned_contract_class_v1(
     sierra_contract: SierraContractClass,
 ) -> StateResult<(ContractClass, SierraVersion)> {
@@ -92,6 +97,34 @@ pub fn sierra_to_versioned_contract_class_v1(
         .unwrap_or_else(|err| panic!("Failed to deserialize ContractClass: {err}"));
 
     Ok((contract_class, sierra_version))
+}
+
+/// Compile a SierraContractClass to a versioned ContractClass V1 (casm) using
+/// in-process compilation (no subprocess). Required for iOS/mobile targets.
+#[cfg(feature = "inline_sierra_compile")]
+pub fn sierra_to_versioned_contract_class_v1(
+    sierra_contract: SierraContractClass,
+) -> StateResult<(ContractClass, SierraVersion)> {
+    use apollo_compilation_utils::class_utils::into_contract_class_for_compilation;
+    use cairo_lang_starknet_classes::casm_contract_class::CasmContractClass;
+
+    let sierra_version = SierraVersion::extract_from_program(&sierra_contract.sierra_program)
+        .unwrap_or_else(|err| panic!("Failed to extract Sierra version: {err}"));
+
+    let cairo_lang_class = into_contract_class_for_compilation(&sierra_contract);
+    let extracted_program = cairo_lang_class
+        .extract_sierra_program(false)
+        .unwrap_or_else(|err| panic!("Failed to extract Sierra program: {err}"));
+
+    let casm_class = CasmContractClass::from_contract_class(
+        cairo_lang_class,
+        extracted_program,
+        true,
+        10 * DEFAULT_MAX_BYTECODE_SIZE,
+    )
+    .unwrap_or_else(|err| panic!("Failed to compile Sierra to Casm: {err}"));
+
+    Ok((ContractClass::V1((casm_class, sierra_version.clone())), sierra_version))
 }
 
 /// Compile a CompressedLegacyContractClass to a ContractClass V0 using cairo_lang_starknet_classes.

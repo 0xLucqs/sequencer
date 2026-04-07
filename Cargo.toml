@@ -112,6 +112,7 @@ members = [
   "crates/starknet_patricia_storage",
   "crates/starknet_proof_verifier",
   "crates/starknet_transaction_prover",
+  "crates/tx_prover_ffi",
   "toml_test_utils",
   "workspace_tests",
 ]
@@ -430,3 +431,38 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 as_conversions = "warn"
 await_holding_lock = "warn"
 await_holding_refcell_ref = "warn"
+
+# --- Local path patches for stwo ecosystem ---
+
+# stwo (used by stwo-circuits via git)
+[patch."https://github.com/starkware-libs/stwo"]
+stwo = { path = "/Users/lucas/stwo/crates/stwo" }
+stwo-constraint-framework = { path = "/Users/lucas/stwo/crates/constraint-framework" }
+stwo-air-utils = { path = "/Users/lucas/stwo/crates/air-utils" }
+stwo-air-utils-derive = { path = "/Users/lucas/stwo/crates/air-utils-derive" }
+
+# stwo-cairo (used by stwo-circuits and proving-utils via git)
+[patch."https://github.com/starkware-libs/stwo-cairo"]
+cairo-air = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/cairo-air" }
+stwo-cairo-adapter = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/adapter" }
+stwo-cairo-common = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/common" }
+stwo-cairo-prover = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/prover" }
+stwo-cairo-serialize = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/cairo-serialize" }
+stwo-cairo-serialize-derive = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/cairo-serialize-derive" }
+stwo-cairo-utils = { path = "/Users/lucas/stwo-cairo/stwo_cairo_prover/crates/utils" }
+
+# stwo-circuits (used by proving-utils via git)
+[patch."https://github.com/starkware-libs/stwo-circuits"]
+circuit-air = { path = "/Users/lucas/stwo-circuits/crates/circuit_air" }
+circuit-cairo-air = { path = "/Users/lucas/stwo-circuits/crates/cairo_air" }
+circuit-common = { path = "/Users/lucas/stwo-circuits/crates/circuit_common" }
+circuit-prover = { path = "/Users/lucas/stwo-circuits/crates/circuit_prover" }
+circuit-serialize = { path = "/Users/lucas/stwo-circuits/crates/circuit_serialize" }
+circuits = { path = "/Users/lucas/stwo-circuits/crates/circuits" }
+circuits-stark-verifier = { path = "/Users/lucas/stwo-circuits/crates/stark_verifier" }
+
+# proving-utils (used by sequencer via git)
+[patch."https://github.com/starkware-libs/proving-utils"]
+privacy-circuit-verify = { path = "/Users/lucas/proving-utils/crates/privacy_circuit_verify" }
+privacy-prove = { path = "/Users/lucas/proving-utils/crates/privacy_prove" }
+cairo-program-runner-lib = { path = "/Users/lucas/proving-utils/crates/cairo-program-runner-lib" }
