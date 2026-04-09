@@ -1,5 +1,7 @@
 use std::fs;
+use std::ffi::OsString;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use apollo_infra_utils::path::resolve_project_relative_path;
 use cairo_vm::vm::runners::cairo_pie::CairoPie;
@@ -14,6 +16,8 @@ use crate::proving::prover::prove;
 const CAIRO_PIE_FILE: &str = "cairo_pie_10_transfers.zip";
 const EXPECTED_PROOF_FACTS_FILE: &str = "proof_facts_10_transfers.json";
 
+static MEMORY_MODE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 fn resolve_resource_path(file_name: &str) -> std::path::PathBuf {
     let path: std::path::PathBuf =
         ["crates", "starknet_transaction_prover", "resources", file_name].iter().collect();
@@ -23,6 +27,26 @@ fn resolve_resource_path(file_name: &str) -> std::path::PathBuf {
 
 fn prepare_precomputes() -> Arc<RecursiveProverPrecomputes> {
     prepare_recursive_prover_precomputes().expect("Failed to prepare precomputes")
+}
+
+struct MemoryModeGuard {
+    previous: Option<OsString>,
+}
+
+impl Drop for MemoryModeGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            unsafe { std::env::set_var("STWO_PROVER_MEMORY_MODE", previous) };
+        } else {
+            unsafe { std::env::remove_var("STWO_PROVER_MEMORY_MODE") };
+        }
+    }
+}
+
+fn set_memory_mode(value: &str) -> MemoryModeGuard {
+    let previous = std::env::var_os("STWO_PROVER_MEMORY_MODE");
+    unsafe { std::env::set_var("STWO_PROVER_MEMORY_MODE", value) };
+    MemoryModeGuard { previous }
 }
 
 /// Integration test that verifies proving works with a real Cairo PIE.
@@ -60,6 +84,41 @@ async fn test_prove_cairo_pie_10_transfers() {
     assert_eq!(
         output.program_output, expected_program_output,
         "Generated program output does not match expected program output"
+    );
+}
+
+#[tokio::test]
+async fn test_recursive_proof_matches_low_memory_cairo_pie_10_transfers() {
+    let _env_lock = MEMORY_MODE_ENV_LOCK.lock().unwrap();
+    let cairo_pie_path = resolve_resource_path(CAIRO_PIE_FILE);
+
+    let fast_output = {
+        let _guard = set_memory_mode("fast");
+        let cairo_pie =
+            CairoPie::read_zip_file(&cairo_pie_path).expect("Failed to read Cairo PIE from zip file");
+        let precomputes = prepare_precomputes();
+        prove(cairo_pie, precomputes)
+            .await
+            .expect("Failed to prove Cairo PIE in fast mode")
+    };
+
+    let low_memory_output = {
+        let _guard = set_memory_mode("low_memory");
+        let cairo_pie =
+            CairoPie::read_zip_file(&cairo_pie_path).expect("Failed to read Cairo PIE from zip file");
+        let precomputes = prepare_precomputes();
+        prove(cairo_pie, precomputes)
+            .await
+            .expect("Failed to prove Cairo PIE in low-memory mode")
+    };
+
+    assert_eq!(
+        fast_output.proof.0, low_memory_output.proof.0,
+        "recursive proof bytes differ between fast and low-memory modes"
+    );
+    assert_eq!(
+        fast_output.program_output, low_memory_output.program_output,
+        "program output differs between fast and low-memory modes"
     );
 }
 

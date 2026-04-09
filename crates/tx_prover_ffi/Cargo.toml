@@ -5,7 +5,11 @@ edition = "2021"
 
 [lib]
 name = "tx_prover_ffi"
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "tx_prover_cli"
+path = "src/main.rs"
 
 [dependencies]
 starknet_transaction_prover = { path = "../starknet_transaction_prover", features = ["ffi"] }
