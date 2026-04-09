@@ -17,7 +17,7 @@ apollo_compilation_utils = { workspace = true, optional = true }
 apollo_compile_to_casm.workspace = true
 apollo_compile_to_casm_types.workspace = true
 apollo_config.workspace = true
-apollo_rpc_execution.workspace = true
+apollo_rpc_execution = { workspace = true, optional = true }
 apollo_sierra_compilation_config.workspace = true
 assert_matches.workspace = true
 blockifier = { workspace = true, features = ["reexecution"] }

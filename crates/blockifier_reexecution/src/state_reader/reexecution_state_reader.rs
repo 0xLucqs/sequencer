@@ -1,4 +1,3 @@
-use apollo_rpc_execution::DEPRECATED_CONTRACT_SIERRA_SIZE;
 use blockifier::blockifier::config::TransactionExecutorConfig;
 use blockifier::blockifier::transaction_executor::TransactionExecutor;
 use blockifier::state::cached_state::{CachedState, CommitmentStateDiff};
@@ -21,6 +20,7 @@ use crate::utils::contract_class_to_compiled_classes;
 
 // TODO(Aviv): Use MAX FEE from starknet_api.
 const MAX_FEE_FOR_L1_HANDLER: Fee = Fee(u128::pow(10, 17));
+const DEPRECATED_CONTRACT_SIERRA_SIZE: usize = 0;
 
 pub trait ReexecutionStateReader {
     fn get_contract_class(&self, class_hash: &ClassHash) -> StateResult<StarknetContractClass>;
