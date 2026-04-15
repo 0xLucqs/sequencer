@@ -235,11 +235,19 @@ where
     // phys_footprint, so a second proof can OOM even though the memory is logically free.
     release_allocator_memory();
 
+    log_memory_state(cb, "before proof");
+
     // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
     std::env::set_var("STWO_PROVER_MEMORY_MODE", "low_memory");
 
     let rt = build_runtime(cb)?;
-    Ok(rt.block_on(future))
+    let result = rt.block_on(future);
+    drop(rt);
+
+    release_allocator_memory();
+    log_memory_state(cb, "after proof");
+
+    Ok(result)
 }
 
 /// Tell the system allocator to release as much retained free memory as possible.
@@ -256,6 +264,59 @@ fn release_allocator_memory() {
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn release_allocator_memory() {}
+
+/// Log process physical footprint and system-available memory.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn log_memory_state(cb: LogCallback, label: &str) {
+    // phys_footprint via task_info
+    let footprint = {
+        #[repr(C)]
+        struct TaskVmInfo {
+            _pad: [u64; 10],
+            phys_footprint: u64,
+        }
+        extern "C" {
+            fn task_info(
+                task: u32,
+                flavor: u32,
+                info: *mut TaskVmInfo,
+                count: *mut u32,
+            ) -> i32;
+            fn mach_task_self_() -> u32;
+        }
+        const TASK_VM_INFO: u32 = 22;
+        let mut info: TaskVmInfo = unsafe { std::mem::zeroed() };
+        let mut count = (std::mem::size_of::<TaskVmInfo>() / std::mem::size_of::<u32>()) as u32;
+        let kr = unsafe { task_info(mach_task_self_(), TASK_VM_INFO, &mut info, &mut count) };
+        if kr == 0 {
+            Some(info.phys_footprint)
+        } else {
+            None
+        }
+    };
+
+    // os_proc_available_memory
+    let available = {
+        extern "C" {
+            fn os_proc_available_memory() -> u64;
+        }
+        unsafe { os_proc_available_memory() }
+    };
+
+    let footprint_mb = footprint
+        .map(|f| format!("{:.0}", f as f64 / (1024.0 * 1024.0)))
+        .unwrap_or_else(|| "?".to_string());
+    send_log(
+        cb,
+        &format!(
+            "MEMORY [{label}] phys_footprint={footprint_mb} MB, available={:.0} MB",
+            available as f64 / (1024.0 * 1024.0),
+        ),
+    );
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn log_memory_state(_cb: LogCallback, _label: &str) {}
 
 fn parse_input_json<'a>(
     input: *const c_char,
