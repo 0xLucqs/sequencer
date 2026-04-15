@@ -253,7 +253,7 @@ where
     // phys_footprint, so a second proof can OOM even though the memory is logically free.
     release_allocator_memory();
 
-    stwo::prover::spill::log_mmap_stats("before proof");
+
     log_memory_state(cb, "before proof");
 
     // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
@@ -261,7 +261,7 @@ where
 
     let rt = build_runtime(cb)?;
     let result = rt.block_on(future);
-    stwo::prover::spill::log_mmap_stats("after block_on");
+
     log_memory_state(cb, "after block_on (before rt drop)");
     drop(rt);
     log_memory_state(cb, "after rt drop");
