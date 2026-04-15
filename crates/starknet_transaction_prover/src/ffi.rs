@@ -135,11 +135,49 @@ fn build_runtime(cb: LogCallback) -> Result<tokio::runtime::Runtime, i32> {
     })
 }
 
+/// Remove leftover temp files from previous prover runs.
+///
+/// On iOS, if the app is killed by jetsam (OOM) during a proof, Rust destructors never run and
+/// `NamedTempFile`s persist in the app's tmp directory.  These stale files can consume multiple
+/// GB and cause the next proof to fail with ENOSPC on mmap spill, followed by an OOM on the
+/// heap fallback.  Cleaning the tmp dir before each proof prevents this accumulation.
+fn cleanup_stale_tmp_files(cb: LogCallback) {
+    let tmp_dir = std::env::temp_dir();
+    let entries = match std::fs::read_dir(&tmp_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let mut removed_bytes = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                removed_bytes += meta.len();
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    if removed_bytes > 0 {
+        send_log(
+            cb,
+            &format!(
+                "Cleaned {:.1} MB of stale temp files from {}",
+                removed_bytes as f64 / (1024.0 * 1024.0),
+                tmp_dir.display(),
+            ),
+        );
+    }
+}
+
 fn with_prover_runtime<F>(cb: LogCallback, future: F) -> Result<F::Output, i32>
 where
     F: Future,
 {
     install_tracing(cb);
+
+    // Remove leftover temp files from previous (possibly OOM-killed) prover runs before
+    // allocating any new ones.
+    cleanup_stale_tmp_files(cb);
 
     // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
     std::env::set_var("STWO_PROVER_MEMORY_MODE", "low_memory");
@@ -419,7 +457,7 @@ async fn prove_transaction_live_async(
         }
     };
 
-    send_log(cb, &format!("Using live RPC node at {rpc_url}, chain_id: {chain_id}"));
+    send_log(cb, &format!("Using live RPC node at {rpc_url}, chain_id: {chain_id}, block_id: {block_id:?}"));
     let factory = build_runner_factory(rpc_url, chain_id);
     let output = match prove_and_verify_transaction(factory, block_id, transaction, cb).await {
         Ok(output) => output,
