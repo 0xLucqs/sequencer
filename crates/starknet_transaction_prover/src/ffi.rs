@@ -167,6 +167,50 @@ fn cleanup_stale_tmp_files(cb: LogCallback) {
             ),
         );
     }
+
+    // Walk the app container to find where large data accumulates.  On iOS the container
+    // root is two levels above the tmp dir (`.../Application/<UUID>/tmp/` → `.../Application/<UUID>/`).
+    let container = tmp_dir.parent().unwrap_or(&tmp_dir);
+    report_dir_sizes(cb, container);
+}
+
+/// Log byte totals for each immediate subdirectory of `root`.
+fn report_dir_sizes(cb: LogCallback, root: &std::path::Path) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let size = dir_size(&path);
+            if size > 1024 * 1024 {
+                send_log(
+                    cb,
+                    &format!(
+                        "Container dir {:?}: {:.1} MB",
+                        path.file_name().unwrap_or_default(),
+                        size as f64 / (1024.0 * 1024.0),
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                total += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            } else if p.is_dir() {
+                total += dir_size(&p);
+            }
+        }
+    }
+    total
 }
 
 fn with_prover_runtime<F>(cb: LogCallback, future: F) -> Result<F::Output, i32>
