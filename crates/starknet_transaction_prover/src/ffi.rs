@@ -128,6 +128,23 @@ struct ProveTransactionParams {
     chain_id: ChainId,
 }
 
+fn install_oom_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // Nightly-only: std::alloc::set_alloc_error_hook. On stable this is a no-op
+        // fallback — the default handler already prints the size and aborts.
+        // We add an eprintln so the message reaches the log callback's stderr capture.
+        #[cfg(feature = "__oom_hook")]
+        std::alloc::set_alloc_error_hook(|layout| {
+            eprintln!("OOM: allocation of {} bytes failed", layout.size());
+        });
+        let _ = std::panic::set_hook(Box::new(|info| {
+            eprintln!("PANIC: {info}");
+        }));
+    });
+}
+
 fn build_runtime(cb: LogCallback) -> Result<tokio::runtime::Runtime, i32> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| {
         send_log(cb, &format!("Failed to create tokio runtime: {e}"));
@@ -225,6 +242,7 @@ where
     F: Future,
 {
     install_tracing(cb);
+    install_oom_hook();
 
     // Remove leftover temp files from previous (possibly OOM-killed) prover runs before
     // allocating any new ones.
