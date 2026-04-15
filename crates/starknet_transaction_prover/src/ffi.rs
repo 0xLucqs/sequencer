@@ -260,10 +260,16 @@ where
 
     let rt = build_runtime(cb)?;
     let result = rt.block_on(future);
+    log_memory_state(cb, "after block_on (before rt drop)");
     drop(rt);
+    log_memory_state(cb, "after rt drop");
 
     release_allocator_memory();
-    log_memory_state(cb, "after proof");
+    log_memory_state(cb, "after malloc_zone_pressure_relief");
+
+    // Give the kernel a moment to reclaim pages from dropped mmaps/files.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    log_memory_state(cb, "after 1s settle");
 
     Ok(result)
 }
