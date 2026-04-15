@@ -265,51 +265,17 @@ fn release_allocator_memory() {
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn release_allocator_memory() {}
 
-/// Log process physical footprint and system-available memory.
+/// Log system-available memory for the process.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn log_memory_state(cb: LogCallback, label: &str) {
-    // phys_footprint via task_info
-    let footprint = {
-        #[repr(C)]
-        struct TaskVmInfo {
-            _pad: [u64; 10],
-            phys_footprint: u64,
-        }
-        extern "C" {
-            fn task_info(
-                task: u32,
-                flavor: u32,
-                info: *mut TaskVmInfo,
-                count: *mut u32,
-            ) -> i32;
-            fn mach_task_self_() -> u32;
-        }
-        const TASK_VM_INFO: u32 = 22;
-        let mut info: TaskVmInfo = unsafe { std::mem::zeroed() };
-        let mut count = (std::mem::size_of::<TaskVmInfo>() / std::mem::size_of::<u32>()) as u32;
-        let kr = unsafe { task_info(mach_task_self_(), TASK_VM_INFO, &mut info, &mut count) };
-        if kr == 0 {
-            Some(info.phys_footprint)
-        } else {
-            None
-        }
-    };
-
-    // os_proc_available_memory
-    let available = {
-        extern "C" {
-            fn os_proc_available_memory() -> u64;
-        }
-        unsafe { os_proc_available_memory() }
-    };
-
-    let footprint_mb = footprint
-        .map(|f| format!("{:.0}", f as f64 / (1024.0 * 1024.0)))
-        .unwrap_or_else(|| "?".to_string());
+    extern "C" {
+        fn os_proc_available_memory() -> u64;
+    }
+    let available = unsafe { os_proc_available_memory() };
     send_log(
         cb,
         &format!(
-            "MEMORY [{label}] phys_footprint={footprint_mb} MB, available={:.0} MB",
+            "MEMORY [{label}] available={:.0} MB",
             available as f64 / (1024.0 * 1024.0),
         ),
     );
