@@ -143,20 +143,7 @@ fn build_runtime(cb: LogCallback) -> Result<tokio::runtime::Runtime, i32> {
 /// heap fallback.  Cleaning the tmp dir before each proof prevents this accumulation.
 fn cleanup_stale_tmp_files(cb: LogCallback) {
     let tmp_dir = std::env::temp_dir();
-    let entries = match std::fs::read_dir(&tmp_dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    let mut removed_bytes = 0u64;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Ok(meta) = std::fs::metadata(&path) {
-                removed_bytes += meta.len();
-            }
-            let _ = std::fs::remove_file(&path);
-        }
-    }
+    let removed_bytes = remove_dir_contents(&tmp_dir);
     if removed_bytes > 0 {
         send_log(
             cb,
@@ -198,6 +185,26 @@ fn report_dir_sizes(cb: LogCallback, root: &std::path::Path) {
     }
 }
 
+/// Recursively remove all files and subdirectories inside `dir`, but not `dir` itself.
+fn remove_dir_contents(dir: &std::path::Path) -> u64 {
+    let mut removed = 0u64;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            removed += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&path);
+        } else if path.is_dir() {
+            removed += remove_dir_contents(&path);
+            let _ = std::fs::remove_dir(&path);
+        }
+    }
+    removed
+}
+
 fn dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -223,12 +230,32 @@ where
     // allocating any new ones.
     cleanup_stale_tmp_files(cb);
 
+    // Ask the system allocator to return freed pages to the OS.  After a proof run the
+    // allocator retains large freed regions; iOS's jetsam counts those against the process's
+    // phys_footprint, so a second proof can OOM even though the memory is logically free.
+    release_allocator_memory();
+
     // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
     std::env::set_var("STWO_PROVER_MEMORY_MODE", "low_memory");
 
     let rt = build_runtime(cb)?;
     Ok(rt.block_on(future))
 }
+
+/// Tell the system allocator to release as much retained free memory as possible.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn release_allocator_memory() {
+    extern "C" {
+        fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+    }
+    // zone = NULL means all zones, goal = 0 means release as much as possible.
+    unsafe {
+        malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn release_allocator_memory() {}
 
 fn parse_input_json<'a>(
     input: *const c_char,
