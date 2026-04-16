@@ -277,24 +277,54 @@ where
     log_memory_state(cb, "after malloc_zone_pressure_relief");
     log_vm_state(cb, "ffi:after_pressure_relief");
 
-    // Give the kernel a moment to reclaim pages from dropped mmaps/files.
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    log_memory_state(cb, "after 1s settle");
-    log_mmap_state(cb, "ffi:after_1s_settle");
-    log_vm_state(cb, "ffi:after_1s_settle");
+    // Give the kernel time to reclaim pages from dropped mmaps/files.  The 1 s we
+    // used to sleep was too short on device: reusable pages and orphaned
+    // vm_map_entries were still sitting around at the start of proof 2.  Sleep
+    // longer, then run a second pressure-relief sweep to harvest whatever the
+    // kernel scavenger freed during the sleep.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    log_memory_state(cb, "after 3s settle");
+    log_vm_state(cb, "ffi:after_3s_settle");
+
+    release_allocator_memory();
+    log_memory_state(cb, "after post-settle pressure relief");
+    log_mmap_state(cb, "ffi:after_post_settle_relief");
+    log_vm_state(cb, "ffi:after_post_settle_relief");
 
     Ok(result)
 }
 
 /// Tell the system allocator to release as much retained free memory as possible.
+///
+/// Loops: a single `malloc_zone_pressure_relief(NULL, 0)` call often leaves more
+/// memory reclaimable because pages become eligible only after deferred async work
+/// completes.  The simulator run showed round 1 releasing nothing and a later call
+/// freeing ~450 MB; the device shows the same pattern.  We cap rounds at 5 with a
+/// 100 ms gap between attempts, and bail as soon as a round releases 0 bytes.
+///
+/// Each round's released-byte count is logged via `PRESSURE_RELIEF` so we can see in
+/// the log whether the loop is producing useful work or just noise.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn release_allocator_memory() {
     extern "C" {
         fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
     }
-    // zone = NULL means all zones, goal = 0 means release as much as possible.
-    unsafe {
-        malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+    const MAX_ROUNDS: usize = 5;
+    for round in 0..MAX_ROUNDS {
+        // zone = NULL means all zones, goal = 0 means release as much as possible.
+        let released = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+        eprintln!(
+            "PRESSURE_RELIEF round={} released_bytes={} released_mb={:.1}",
+            round,
+            released,
+            released as f64 / (1024.0 * 1024.0),
+        );
+        if released == 0 {
+            break;
+        }
+        if round + 1 < MAX_ROUNDS {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
 
