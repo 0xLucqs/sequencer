@@ -13,7 +13,7 @@ use blockifier::state::contract_class_manager::ContractClassManager;
 use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use blockifier_reexecution::utils::get_chain_info;
 #[cfg(feature = "stwo_proving")]
-use privacy_prove::log_recursive_prover_mmap_stats;
+use privacy_prove::{log_recursive_prover_mmap_stats, log_recursive_prover_vm_walk};
 use serde::Deserialize;
 use starknet_api::core::ChainId;
 use starknet_api::rpc_transaction::RpcTransaction;
@@ -258,6 +258,7 @@ where
 
     log_memory_state(cb, "before proof");
     log_mmap_state(cb, "ffi:before_proof");
+    log_vm_state(cb, "ffi:before_proof");
 
     // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
     std::env::set_var("STWO_PROVER_MEMORY_MODE", "low_memory");
@@ -265,18 +266,22 @@ where
     let rt = build_runtime(cb)?;
     let result = rt.block_on(future);
     log_mmap_state(cb, "ffi:after_block_on");
+    log_vm_state(cb, "ffi:after_block_on");
 
     log_memory_state(cb, "after block_on (before rt drop)");
     drop(rt);
     log_memory_state(cb, "after rt drop");
+    log_vm_state(cb, "ffi:after_rt_drop");
 
     release_allocator_memory();
     log_memory_state(cb, "after malloc_zone_pressure_relief");
+    log_vm_state(cb, "ffi:after_pressure_relief");
 
     // Give the kernel a moment to reclaim pages from dropped mmaps/files.
     std::thread::sleep(std::time::Duration::from_secs(1));
     log_memory_state(cb, "after 1s settle");
     log_mmap_state(cb, "ffi:after_1s_settle");
+    log_vm_state(cb, "ffi:after_1s_settle");
 
     Ok(result)
 }
@@ -323,6 +328,21 @@ fn log_mmap_state(cb: LogCallback, label: &str) {
 
 #[cfg(not(feature = "stwo_proving"))]
 fn log_mmap_state(_cb: LogCallback, _label: &str) {}
+
+/// Snapshot task VM accounting + largest contiguous free VA gap.
+///
+/// Complements `log_mmap_state` (which only sees stwo-tracked mmaps) and `log_memory_state`
+/// (which only reports phys_footprint headroom). Use to distinguish VA fragmentation from
+/// allocator retention when a later mmap fails with ENOMEM at a state an earlier proof
+/// survived.
+#[cfg(feature = "stwo_proving")]
+fn log_vm_state(cb: LogCallback, label: &str) {
+    send_log(cb, &format!("VM_CHECKPOINT [{label}]"));
+    log_recursive_prover_vm_walk(label);
+}
+
+#[cfg(not(feature = "stwo_proving"))]
+fn log_vm_state(_cb: LogCallback, _label: &str) {}
 
 fn parse_input_json<'a>(
     input: *const c_char,
