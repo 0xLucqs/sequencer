@@ -13,7 +13,7 @@ use blockifier::state::contract_class_manager::ContractClassManager;
 use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use blockifier_reexecution::utils::get_chain_info;
 #[cfg(feature = "stwo_proving")]
-use privacy_prove::{log_recursive_prover_mmap_stats, log_recursive_prover_vm_walk};
+use privacy_prove::{log_recursive_prover_mmap_stats, log_recursive_prover_vm_walk, ProverMemoryMode};
 use serde::Deserialize;
 use starknet_api::core::ChainId;
 use starknet_api::rpc_transaction::RpcTransaction;
@@ -54,6 +54,21 @@ const STATUS_RPC_RECORDS_JSON_UTF8_ERROR: i32 = 11;
 const STATUS_NULL_RPC_URL: i32 = 12;
 const STATUS_RPC_URL_UTF8_ERROR: i32 = 13;
 const STATUS_RESULT_JSON_ERROR: i32 = 14;
+const STATUS_INVALID_MEMORY_MODE: i32 = 15;
+
+/// Map a u8 mode code (matching the order of [`stwo::prover::ProverMemoryMode`]) to the enum.
+///
+/// 0 = Fast, 1 = SmoothedPeak, 2 = LowMemory, 3 = UltraLow.
+#[cfg(feature = "stwo_proving")]
+fn parse_memory_mode(code: u8) -> Option<ProverMemoryMode> {
+    match code {
+        0 => Some(ProverMemoryMode::Fast),
+        1 => Some(ProverMemoryMode::SmoothedPeak),
+        2 => Some(ProverMemoryMode::LowMemory),
+        3 => Some(ProverMemoryMode::UltraLow),
+        _ => None,
+    }
+}
 
 fn send_log(cb: LogCallback, msg: &str) {
     if let Ok(c_str) = CString::new(msg) {
@@ -260,9 +275,6 @@ where
     log_mmap_state(cb, "ffi:before_proof");
     log_vm_state(cb, "ffi:before_proof");
 
-    // Use low-memory proving path (drops FRI intermediates, recomputes during decommit).
-    std::env::set_var("STWO_PROVER_MEMORY_MODE", "low_memory");
-
     let rt = build_runtime(cb)?;
     let result = rt.block_on(future);
     log_mmap_state(cb, "ffi:after_block_on");
@@ -410,13 +422,18 @@ async fn prove_and_verify_transaction<R: VirtualSnosRunner>(
     factory: R,
     block_id: BlockId,
     transaction: RpcTransaction,
+    #[cfg(feature = "stwo_proving")] memory_mode: ProverMemoryMode,
     cb: LogCallback,
 ) -> Result<ProveTransactionResult, i32> {
     send_log(
         cb,
         "Initializing VirtualSnosProver (preparing precomputes, this may take a while)...",
     );
-    let prover = VirtualSnosProver::from_runner(factory);
+    let prover = VirtualSnosProver::from_runner(
+        factory,
+        #[cfg(feature = "stwo_proving")]
+        memory_mode,
+    );
 
     send_log(cb, "Running prove_transaction (OS execution + Stwo proving)...");
     let output = prover.prove_transaction(block_id, transaction).await.map_err(|e| {
@@ -460,6 +477,9 @@ fn serialize_prove_transaction_result(
 ///
 /// `request_json` must deserialize as `{"params":{"block_id":...,"transaction":...}}`.
 /// `rpc_records_json` must deserialize as `{"interactions":[...]}`.
+/// `memory_mode` selects the [`stwo::prover::ProverMemoryMode`] tier used to build the
+/// prover precomputes (0 = Fast, 1 = SmoothedPeak, 2 = LowMemory, 3 = UltraLow). When the
+/// `stwo_proving` feature is disabled the value is ignored.
 ///
 /// Returns 0 on success, non-zero on failure. Progress and errors are reported
 /// through `cb`.
@@ -472,6 +492,7 @@ fn serialize_prove_transaction_result(
 pub extern "C" fn prove_transaction(
     request_json: *const c_char,
     rpc_records_json: *const c_char,
+    memory_mode: u8,
     cb: LogCallback,
 ) -> i32 {
     let request_str = match parse_input_json(
@@ -496,7 +517,27 @@ pub extern "C" fn prove_transaction(
         Err(code) => return code,
     };
 
-    match with_prover_runtime(cb, prove_transaction_async(request_str, records_str, cb)) {
+    #[cfg(feature = "stwo_proving")]
+    let memory_mode = match parse_memory_mode(memory_mode) {
+        Some(mode) => mode,
+        None => {
+            send_log(cb, &format!("Invalid memory_mode code: {memory_mode}"));
+            return STATUS_INVALID_MEMORY_MODE;
+        }
+    };
+    #[cfg(not(feature = "stwo_proving"))]
+    let _ = memory_mode;
+
+    match with_prover_runtime(
+        cb,
+        prove_transaction_async(
+            request_str,
+            records_str,
+            #[cfg(feature = "stwo_proving")]
+            memory_mode,
+            cb,
+        ),
+    ) {
         Ok(code) => code,
         Err(code) => code,
     }
@@ -512,7 +553,16 @@ pub extern "C" fn prove_transaction(
 /// `cb` must be a valid function pointer for the lifetime of this call.
 #[no_mangle]
 pub extern "C" fn prove_privacy_demo(cb: LogCallback) -> i32 {
-    match with_prover_runtime(cb, prove_transaction_async(REQUEST_JSON, RPC_RECORDS_JSON, cb)) {
+    match with_prover_runtime(
+        cb,
+        prove_transaction_async(
+            REQUEST_JSON,
+            RPC_RECORDS_JSON,
+            #[cfg(feature = "stwo_proving")]
+            ProverMemoryMode::Fast,
+            cb,
+        ),
+    ) {
         Ok(code) => code,
         Err(code) => code,
     }
@@ -531,6 +581,7 @@ pub extern "C" fn prove_privacy_demo(cb: LogCallback) -> i32 {
 pub extern "C" fn prove_transaction_live(
     request_json: *const c_char,
     rpc_url: *const c_char,
+    memory_mode: u8,
     cb: LogCallback,
 ) -> *mut c_char {
     let request_str = match parse_input_json(
@@ -555,11 +606,30 @@ pub extern "C" fn prove_transaction_live(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let result_json =
-        match with_prover_runtime(cb, prove_transaction_live_async(request_str, rpc_url_str, cb)) {
-            Ok(Some(result_json)) => result_json,
-            Ok(None) | Err(_) => return std::ptr::null_mut(),
-        };
+    #[cfg(feature = "stwo_proving")]
+    let memory_mode = match parse_memory_mode(memory_mode) {
+        Some(mode) => mode,
+        None => {
+            send_log(cb, &format!("Invalid memory_mode code: {memory_mode}"));
+            return std::ptr::null_mut();
+        }
+    };
+    #[cfg(not(feature = "stwo_proving"))]
+    let _ = memory_mode;
+
+    let result_json = match with_prover_runtime(
+        cb,
+        prove_transaction_live_async(
+            request_str,
+            rpc_url_str,
+            #[cfg(feature = "stwo_proving")]
+            memory_mode,
+            cb,
+        ),
+    ) {
+        Ok(Some(result_json)) => result_json,
+        Ok(None) | Err(_) => return std::ptr::null_mut(),
+    };
 
     match CString::new(result_json) {
         Ok(result_json) => result_json.into_raw(),
@@ -580,7 +650,12 @@ pub extern "C" fn free_proof_result(ptr: *mut c_char) {
     }
 }
 
-async fn prove_transaction_async(request_str: &str, records_str: &str, cb: LogCallback) -> i32 {
+async fn prove_transaction_async(
+    request_str: &str,
+    records_str: &str,
+    #[cfg(feature = "stwo_proving")] memory_mode: ProverMemoryMode,
+    cb: LogCallback,
+) -> i32 {
     send_log(cb, "Parsing request JSON...");
     let request: ProveTransactionRequest = match serde_json::from_str(request_str) {
         Ok(r) => r,
@@ -615,7 +690,16 @@ async fn prove_transaction_async(request_str: &str, records_str: &str, cb: LogCa
     };
 
     let factory = build_runner_factory(rpc_url, chain_id);
-    match prove_and_verify_transaction(factory, block_id, transaction, cb).await {
+    match prove_and_verify_transaction(
+        factory,
+        block_id,
+        transaction,
+        #[cfg(feature = "stwo_proving")]
+        memory_mode,
+        cb,
+    )
+    .await
+    {
         Ok(_) => STATUS_OK,
         Err(code) => code,
     }
@@ -624,6 +708,7 @@ async fn prove_transaction_async(request_str: &str, records_str: &str, cb: LogCa
 async fn prove_transaction_live_async(
     request_str: &str,
     rpc_url_str: &str,
+    #[cfg(feature = "stwo_proving")] memory_mode: ProverMemoryMode,
     cb: LogCallback,
 ) -> Option<String> {
     send_log(cb, "Parsing request JSON...");
@@ -647,7 +732,16 @@ async fn prove_transaction_live_async(
 
     send_log(cb, &format!("Using live RPC node at {rpc_url}, chain_id: {chain_id}, block_id: {block_id:?}"));
     let factory = build_runner_factory(rpc_url, chain_id);
-    let output = match prove_and_verify_transaction(factory, block_id, transaction, cb).await {
+    let output = match prove_and_verify_transaction(
+        factory,
+        block_id,
+        transaction,
+        #[cfg(feature = "stwo_proving")]
+        memory_mode,
+        cb,
+    )
+    .await
+    {
         Ok(output) => output,
         Err(_) => return None,
     };
@@ -685,12 +779,19 @@ mod tests {
         result
     }
 
+    /// Mode code shared by tests; corresponds to [`ProverMemoryMode::Fast`].
+    const TEST_MEMORY_MODE: u8 = 0;
+
     #[test]
     fn prove_transaction_rejects_null_request_pointer() {
         let rpc_records_json = CString::new(RPC_RECORDS_JSON).unwrap();
 
-        let result =
-            prove_transaction(std::ptr::null(), rpc_records_json.as_ptr(), noop_log_callback);
+        let result = prove_transaction(
+            std::ptr::null(),
+            rpc_records_json.as_ptr(),
+            TEST_MEMORY_MODE,
+            noop_log_callback,
+        );
 
         assert_eq!(result, STATUS_NULL_REQUEST_JSON);
     }
@@ -699,7 +800,12 @@ mod tests {
     fn prove_transaction_rejects_null_rpc_records_pointer() {
         let request_json = CString::new(REQUEST_JSON).unwrap();
 
-        let result = prove_transaction(request_json.as_ptr(), std::ptr::null(), noop_log_callback);
+        let result = prove_transaction(
+            request_json.as_ptr(),
+            std::ptr::null(),
+            TEST_MEMORY_MODE,
+            noop_log_callback,
+        );
 
         assert_eq!(result, STATUS_NULL_RPC_RECORDS_JSON);
     }
@@ -712,6 +818,7 @@ mod tests {
         let result = prove_transaction(
             invalid_request_json.as_ptr().cast(),
             rpc_records_json.as_ptr(),
+            TEST_MEMORY_MODE,
             noop_log_callback,
         );
 
@@ -722,7 +829,12 @@ mod tests {
     fn prove_transaction_live_rejects_null_request_pointer() {
         let rpc_url = CString::new("https://example.com").unwrap();
 
-        let result = prove_transaction_live(std::ptr::null(), rpc_url.as_ptr(), noop_log_callback);
+        let result = prove_transaction_live(
+            std::ptr::null(),
+            rpc_url.as_ptr(),
+            TEST_MEMORY_MODE,
+            noop_log_callback,
+        );
 
         assert!(result.is_null());
     }
@@ -731,8 +843,12 @@ mod tests {
     fn prove_transaction_live_rejects_null_rpc_url_pointer() {
         let request_json = CString::new(REQUEST_JSON).unwrap();
 
-        let result =
-            prove_transaction_live(request_json.as_ptr(), std::ptr::null(), noop_log_callback);
+        let result = prove_transaction_live(
+            request_json.as_ptr(),
+            std::ptr::null(),
+            TEST_MEMORY_MODE,
+            noop_log_callback,
+        );
 
         assert!(result.is_null());
     }
@@ -745,6 +861,7 @@ mod tests {
         let result = prove_transaction_live(
             invalid_request_json.as_ptr().cast(),
             rpc_url.as_ptr(),
+            TEST_MEMORY_MODE,
             noop_log_callback,
         );
 
@@ -759,6 +876,7 @@ mod tests {
         let result = prove_transaction_live(
             request_json.as_ptr(),
             invalid_rpc_url.as_ptr().cast(),
+            TEST_MEMORY_MODE,
             noop_log_callback,
         );
 
@@ -767,31 +885,56 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn prove_transaction_async_rejects_invalid_request_json() {
-        let result = prove_transaction_async("not json", RPC_RECORDS_JSON, noop_log_callback).await;
+        let result = prove_transaction_async(
+            "not json",
+            RPC_RECORDS_JSON,
+            #[cfg(feature = "stwo_proving")]
+            ProverMemoryMode::Fast,
+            noop_log_callback,
+        )
+        .await;
 
         assert_eq!(result, STATUS_REQUEST_JSON_ERROR);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn prove_transaction_async_rejects_invalid_rpc_records_json() {
-        let result = prove_transaction_async(REQUEST_JSON, "not json", noop_log_callback).await;
+        let result = prove_transaction_async(
+            REQUEST_JSON,
+            "not json",
+            #[cfg(feature = "stwo_proving")]
+            ProverMemoryMode::Fast,
+            noop_log_callback,
+        )
+        .await;
 
         assert_eq!(result, STATUS_RPC_RECORDS_JSON_ERROR);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn prove_transaction_live_async_rejects_invalid_request_json() {
-        let result =
-            prove_transaction_live_async("not json", "https://example.com", noop_log_callback)
-                .await;
+        let result = prove_transaction_live_async(
+            "not json",
+            "https://example.com",
+            #[cfg(feature = "stwo_proving")]
+            ProverMemoryMode::Fast,
+            noop_log_callback,
+        )
+        .await;
 
         assert!(result.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn prove_transaction_live_async_rejects_invalid_rpc_url() {
-        let result =
-            prove_transaction_live_async(REQUEST_JSON, "not a url", noop_log_callback).await;
+        let result = prove_transaction_live_async(
+            REQUEST_JSON,
+            "not a url",
+            #[cfg(feature = "stwo_proving")]
+            ProverMemoryMode::Fast,
+            noop_log_callback,
+        )
+        .await;
 
         assert!(result.is_none());
     }

@@ -40,7 +40,11 @@ impl ProvingRpcServerImpl {
 
     /// Creates a new ProvingRpcServerImpl from configuration.
     pub fn from_config(config: &ServiceConfig) -> Self {
-        let prover = RpcVirtualSnosProver::new(&config.prover_config);
+        let prover = RpcVirtualSnosProver::new(
+            &config.prover_config,
+            #[cfg(feature = "stwo_proving")]
+            privacy_prove::ProverMemoryMode::Fast,
+        );
         Self::new(prover, config.max_concurrent_requests)
     }
 }

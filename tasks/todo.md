@@ -1,5 +1,23 @@
 # Task Plan
 
+## Live RPC Proof FFI
+
+- [x] Inspect the current sequencer/mobile FFI surfaces and preserve the existing offline replay flow.
+- [x] Add `prove_transaction_live` plus `free_proof_result` in `starknet_transaction_prover::ffi`, sharing the prover setup where possible.
+- [x] Return the proved result as JSON matching the SDK shape and add focused Rust coverage for live-input validation/serialization behavior.
+- [x] Update `~/mobile-stwo` header, Rust wrapper/JNI bridge, Kotlin declarations, and the CLI smoke path for the live RPC entry point.
+- [x] Run focused verification for the sequencer FFI tests and the mobile wrapper build, then record exact commands and outcomes here.
+- [x] Add review notes here.
+
+## Dynamic Input FFI
+
+- [x] Inspect the existing prover FFI path and preserve the current privacy-demo behavior.
+- [x] Add a shared Rust implementation path plus a new `prove_transaction` FFI that accepts request and RPC-record JSON strings.
+- [x] Add focused Rust tests for the new FFI input validation and wrapper behavior.
+- [x] Update the mobile wrapper crate, C header, and Android bindings to expose the dynamic-input API.
+- [x] Run focused verification for the sequencer crate and the mobile Rust wrapper.
+- [x] Add the verification results and review notes here.
+
 - [x] Recover the partial prover refactor and inspect the current harness state.
 - [x] Add the fixed privacy-demo request fixture and finish the offline test wiring.
 - [x] Record the full RPC interaction set needed by the privacy-demo prover flow.
@@ -11,6 +29,59 @@
 - [ ] Add the measured results and review notes here.
 
 # Review
+
+## Live RPC Proof FFI
+
+- Added `prove_transaction_live(const char*, const char*, LogCallback) -> char*` and
+  `free_proof_result(char*)` to `crates/starknet_transaction_prover/src/ffi.rs`.
+- Refactored the sequencer FFI so the offline replay path and the new live-RPC path share:
+  runner construction, prover initialization, proof verification, and JSON serialization.
+- The live path now uses the request JSON's `block_id` instead of forcing `BlockId::Latest`, and
+  returns the serialized `ProveTransactionResult` JSON directly to the caller on success.
+- Added focused Rust coverage for live-input null/UTF-8 validation, invalid JSON / invalid URL
+  rejection, JSON shape expectations, and result-pointer freeing.
+- Updated the mobile wrapper surface in `~/mobile-stwo`:
+  - `rust/Cargo.toml`
+  - `rust/crates/tx_prover_ffi/src/lib.rs`
+  - `rust/crates/tx_prover_ffi/src/main.rs`
+  - `shared/tx_prover_ffi.h`
+  - `android/app/src/main/kotlin/com/txprover/NativeLib.kt`
+- Verification:
+  - Passed:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo test --config build.rustc-wrapper='""' -p starknet_transaction_prover --features ffi ffi::tests --lib`
+  - Passed:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo check --config build.rustc-wrapper='""' -p tx_prover_ffi`
+    in `~/mobile-stwo/rust`
+  - Reached the new live FFI path and prover initialization, but the live CLI smoke test failed
+    on the first outbound RPC call with:
+    `prove_transaction failed: error sending request for url (https://free-rpc.nethermind.io/sepolia-juno/)`
+    Command:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo run --config build.rustc-wrapper='""' -p tx_prover_ffi --bin tx_prover_cli -- live`
+
+## Dynamic Input FFI
+
+- Added `prove_transaction(const char*, const char*, LogCallback)` to
+  `crates/starknet_transaction_prover/src/ffi.rs` and refactored the proving flow into a shared
+  async path so `prove_privacy_demo` still uses the embedded fixtures unchanged.
+- The new sequencer FFI now validates null pointers and UTF-8 before entering Tokio, returns
+  named status codes, and uses the request's `block_id` rather than forcing `BlockId::Latest`.
+- Added focused Rust coverage for the new FFI validation and async JSON parsing failure cases in
+  `crates/starknet_transaction_prover/src/ffi.rs`.
+- Synced the same FFI change into the cargo git checkout used by `mobile-stwo`:
+  `~/.cargo/git/checkouts/sequencer-b9e15abbb29091b0/b4157da/crates/starknet_transaction_prover/src/ffi.rs`.
+- Updated the mobile wrapper surface:
+  - `~/mobile-stwo/rust/crates/tx_prover_ffi/src/lib.rs`
+  - `~/mobile-stwo/shared/tx_prover_ffi.h`
+  - `~/mobile-stwo/android/app/src/main/kotlin/com/txprover/NativeLib.kt`
+- Verification:
+  - Passed:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo test --config build.rustc-wrapper='""' -p starknet_transaction_prover --features ffi ffi::tests --lib`
+  - Passed:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo check --config build.rustc-wrapper='""' -p tx_prover_ffi`
+    in `~/mobile-stwo/rust`
+  - Blocked by local Android toolchain setup, not source errors:
+    `PATH=/Users/lucas/sequencer/sequencer_venv/bin:$PATH rtk proxy rustup run nightly-2025-07-14 cargo check --config build.rustc-wrapper='""' -p tx_prover_ffi --target aarch64-linux-android`
+    failed because `aarch64-linux-android-clang` is not installed or not on `PATH`.
 
 - Added an ignored privacy-demo prover test backed by an in-repo request fixture at
   `crates/starknet_transaction_prover/resources/privacy_demo_prove_transaction_request.json`.

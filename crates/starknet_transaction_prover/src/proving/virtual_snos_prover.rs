@@ -11,7 +11,9 @@ use blockifier::state::contract_class_manager::ContractClassManager;
 use blockifier_reexecution::state_reader::rpc_objects::BlockId;
 use blockifier_reexecution::utils::get_chain_info;
 #[cfg(feature = "stwo_proving")]
-use privacy_prove::{prepare_recursive_prover_precomputes, RecursiveProverPrecomputes};
+use privacy_prove::{
+    prepare_recursive_prover_precomputes, ProverMemoryMode, RecursiveProverPrecomputes,
+};
 use serde::{Deserialize, Serialize};
 use starknet_api::rpc_transaction::{RpcInvokeTransaction, RpcInvokeTransactionV3, RpcTransaction};
 use starknet_api::transaction::fields::{Fee, Proof, ProofFacts, ValidResourceBounds};
@@ -60,8 +62,13 @@ pub(crate) type RpcVirtualSnosProver = VirtualSnosProver<RpcRunnerFactory>;
 impl VirtualSnosProver<RpcRunnerFactory> {
     /// Creates a new VirtualSnosProver from configuration.
     ///
-    /// This constructor creates an RPC-based prover using the configuration values.
-    pub fn new(prover_config: &ProverConfig) -> Self {
+    /// This constructor creates an RPC-based prover using the configuration values. The
+    /// `memory_mode` argument is plumbed into the recursive-prover precompute pool so the
+    /// caller picks the per-process memory tier explicitly instead of relying on env vars.
+    pub fn new(
+        prover_config: &ProverConfig,
+        #[cfg(feature = "stwo_proving")] memory_mode: ProverMemoryMode,
+    ) -> Self {
         let contract_class_manager =
             ContractClassManager::start(prover_config.contract_class_manager_config.clone());
         let node_url =
@@ -75,7 +82,7 @@ impl VirtualSnosProver<RpcRunnerFactory> {
             prover_config.runner_config.clone(),
         );
         #[cfg(feature = "stwo_proving")]
-        let precomputes = prepare_recursive_prover_precomputes()
+        let precomputes = prepare_recursive_prover_precomputes(memory_mode)
             .expect("Failed to prepare recursive prover precomputes");
         Self {
             runner,
@@ -91,9 +98,12 @@ impl<R: VirtualSnosRunner> VirtualSnosProver<R> {
     ///
     /// This constructor allows using any runner implementation.
     #[allow(dead_code)]
-    pub(crate) fn from_runner(runner: R) -> Self {
+    pub(crate) fn from_runner(
+        runner: R,
+        #[cfg(feature = "stwo_proving")] memory_mode: ProverMemoryMode,
+    ) -> Self {
         #[cfg(feature = "stwo_proving")]
-        let precomputes = prepare_recursive_prover_precomputes()
+        let precomputes = prepare_recursive_prover_precomputes(memory_mode)
             .expect("Failed to prepare recursive prover precomputes");
         Self {
             runner,

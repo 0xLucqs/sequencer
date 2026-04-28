@@ -119,7 +119,11 @@ async fn test_prove_balance_of_transaction() {
     let rpc_tx = build_client_side_rpc_invoke(account, calldata);
 
     let factory = runner_factory(&test_mode.rpc_url());
-    let prover = VirtualSnosProver::from_runner(factory);
+    let prover = VirtualSnosProver::from_runner(
+        factory,
+        #[cfg(feature = "stwo_proving")]
+        privacy_prove::ProverMemoryMode::Fast,
+    );
 
     // Run the full prover pipeline: OS execution → proof generation.
     let result = prover.prove_transaction(BlockId::Latest, rpc_tx).await;
@@ -159,7 +163,11 @@ async fn test_prove_privacy_demo_transaction() {
     let block_id = resolve_privacy_demo_block_id(request.block_id);
 
     let factory = runner_factory_with_chain_id(&test_mode.rpc_url(), ChainId::IntegrationSepolia);
-    let prover = VirtualSnosProver::from_runner(factory);
+    let prover = VirtualSnosProver::from_runner(
+        factory,
+        #[cfg(feature = "stwo_proving")]
+        privacy_prove::ProverMemoryMode::Fast,
+    );
 
     let result = prover.prove_transaction(block_id, request.transaction).await;
 
@@ -199,7 +207,11 @@ async fn test_prove_transfer_transaction() {
     let rpc_tx = build_client_side_rpc_invoke(account, calldata);
 
     let factory = runner_factory(&test_mode.rpc_url());
-    let prover = VirtualSnosProver::from_runner(factory);
+    let prover = VirtualSnosProver::from_runner(
+        factory,
+        #[cfg(feature = "stwo_proving")]
+        privacy_prove::ProverMemoryMode::Fast,
+    );
 
     // Run the full prover pipeline: OS execution → proof generation.
     let result = prover.prove_transaction(BlockId::Latest, rpc_tx).await;
